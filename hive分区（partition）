@@ -1,0 +1,241 @@
+hive分区（partition）
+
+一、背景
+1、在Hive Select查询中一般会扫描整个表内容，会消耗很多时间做没必要的工作。有时候只需要扫描表中关心的一部分数据，因此建表时引入了partition概念。
+2、分区表指的是在创建表时指定的partition的分区空间
+3、如果需要创建有分区的表，需要在create表的时候调用可选参数partitioned by
+
+hive中创建分区表没有什么复杂的分区类型(范围分区、列表分区、hash分区、混合分区等)。
+分区列也不是表中的一个实际的字段，而是一个或者多个伪列。
+意思是说在表的数据文件中实际上并不保存分区列的信息与数据。
+
+二、技术细节
+1、一个表可以拥有一个或者多个分区，每个分区以文件夹的形式单独存在表文件夹的目录下
+2、表和列名不区分大小写
+3、分区是以字段的形式在表结构中存在，通过describe table命令可以查看到字段存在，但是该字段不存放实际的数据内容，仅仅是分区的表示
+4、建表的语法（建分区可参见PARTITIONED BY参数）：
+CREATE [EXTERNAL] TABLE [IF NOT EXISTS] table_name
+[(col_name data_type [COMMENT col_comment], ...)]
+[COMMENT table_comment]
+[PARTITIONED BY (col_name data_type [COMMENT col_comment], ...)]
+[CLUSTERED BY (col_name, col_name, ...) [SORTED BY (col_name [ASC|DESC], ...)]INTO num_buckets BUCKETS]
+[ROW FORMAT row_format]
+[STORED AS file_format]
+[LOCATION hdfs_path]
+
+下面的语句创建了一个简单的分区表：
+create table partition_test
+(member_id string,
+name string
+)
+partitioned by (
+stat_date string,
+province string)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ',';
+
+创建了stat_date和province两个字段作为分区列。
+
+5、分区建表分为2种，一种是单分区，也就是说在表文件夹目录下只有一级文件夹目录。另外一种是多分区，表文件夹下出现多文件夹嵌套模式。
+    a、单分区建表语句：create table day_table (id int, content string) partitioned by (dt string);
+       单分区表，按天分区，在表结构中存在id，content，dt三列。
+    b、双分区建表语句：create table day_hour_table (id int, content string) partitioned by (dt string, hour string);
+       双分区表，按天和小时分区，在表结构中新增加了dt和hour两列。
+
+
+6、添加分区表语法（表已创建，在此基础上添加分区）：
+  ALTER TABLE table_name ADD
+  partition_spec [ LOCATION 'location1' ]
+  partition_spec [ LOCATION 'location2' ] ...
+  partition_spec:
+  : PARTITION (partition_col = partition_col_value,
+  partition_col = partiton_col_value, ...)
+
+  用户可以用 ALTER TABLE ADD PARTITION 来向一个表中增加分区。当分区名是字符串时加引号。
+
+  通常情况下需要先预先创建好分区，然后才能使用该分区，例如：
+  alter table partition_test add partition (stat_date='20110728',province='zhejiang');
+
+  这样就创建好了一个分区.相应的创建了两个文件夹
+  partition_test/
+  └── stat_date=20110728
+      └── province=zhejiang
+
+   每一个分区都会有一个独立的文件夹，下面是该分区所有的数据文件。在这个例子中stat_date是主层次，province是副层次
+   因为分区列的值要转化为文件夹的存储路径，所以如果分区列的值中包含特殊值，如 '%', ':', '/', '#',它将会被使用%加上2字节的ASCII码进行转义
+   
+   创建数据表
+  create table partition_test_input
+  (
+      stat_date string,
+      member_id string,
+      name string,
+      province string
+  )
+  ROW FORMAT DELIMITED FIELDS TERMINATED BY ',';
+  
+  data.txt
+----
+20110526,1,liujiannan,liaoning
+20110526,2,wangchaoqun,hubei
+20110728,3,xuhongxing,sichuan
+20110728,4,zhudaoyong,henan
+20110728,5,zhouchengyu,heilongjiang
+====
+load data local inpath '/opt/data/data.txt' overwrite into table partition_test_input;
+
+hive> select * from partition_test_input;
+
+向partition_test的分区中插入数据
+hive> insert overwrite table partition_test partition(stat_date='20110728',province='henan') select member_id,name from partition_test_input where stat_date='20110728' and province='henan';
+
+结果为:
+partition_test/
+└── stat_date=20110728
+    ├── province=henan
+    │   └── 000000_0
+    └── province=zhejiang
+
+还可以同时向多个分区插入数据，0.7版本以后不存在的分区会自动创建，0.6之前的版本官方文档上说必须要预先创建好分区：
+from partition_test_input
+insert overwrite table partition_test partition (stat_date='20110526',province='liaoning')
+select member_id,name where stat_date='20110526' and province='liaoning'
+insert overwrite table partition_test partition (stat_date='20110728',province='sichuan')
+select member_id,name where stat_date='20110728' and province='sichuan'
+insert overwrite table partition_test partition (stat_date='20110728',province='heilongjiang')
+select member_id,name where stat_date='20110728' and province='heilongjiang';
+----
+partition_test/
+├── stat_date=20110526
+│   └── province=liaoning
+│       └── 000000_0
+└── stat_date=20110728
+    ├── province=heilongjiang
+    │   └── 000000_0
+    ├── province=henan
+    │   └── 000000_0
+    ├── province=sichuan
+    │   └── 000000_0
+    └── province=zhejiang
+====
+特别要注意，在其他数据库中，一般向分区表中插入数据时系统会校验数据是否符合该分区，如果不符合会报错。而在hive中，向某个分区中插入什么样的数据完全是由人来控制的，因为分区键是伪列，不实际存储在文件中，如：
+
+hive> insert overwrite table partition_test partition(stat_date='20110527',province='liaoning') select member_id,name from partition_test_input;
+
+hive> select * from partition_test where stat_date='20110527' and province='liaoning';
+----
+1   liujiannan  20110527    liaoning
+2   wangchaoqun 20110527    liaoning
+3   xuhongxing  20110527    liaoning
+4   zhudaoyong  20110527    liaoning
+5   zhouchengyu 20110527    liaoning
+====
+可以看到在partition_test_input中的5条数据有着不同的stat_date和province，但是在插入到partition(stat_date='20110527',province='liaoning')这个分区后，5条数据的stat_date和province都变成相同的了，因为这两列的数据是根据文件夹的名字读取来的，而不是实际从数据文件中读取来的：
+----
+partition_test/
+├── stat_date=20110526
+│   └── province=liaoning
+│       └── 000000_0
+├── stat_date=20110527
+│   └── province=liaoning
+│       └── 000000_0
+====
+cat /opt/hive/warehouse/partition_test/stat_date=20110527/province=liaoning/000000_0
+----
+1,liujiannan
+2,wangchaoqun
+3,xuhongxing
+4,zhudaoyong
+5,zhouchengyu
+====
+
+7、删除分区语法：
+ALTER TABLE table_name DROP
+partition_spec, partition_spec,...
+用户可以用 ALTER TABLE DROP PARTITION 来删除分区。分区的元数据和数据将被一并删除。
+
+ALTER TABLE partition_test DROP PARTITION (stat_date='20110527',province='liaoning');
+ALTER TABLE partition_test DROP PARTITION (stat_date='20110728');
+
+动态分区
+按照上面的方法向分区表中插入数据，如果源数据量很大，那么针对一个分区就要写一个insert，非常麻烦。况且在之前的版本中，必须先手动创建好所有的分区后才能插入，这就更麻烦了，你必须先要知道源数据中都有什么样的数据才能创建分区。
+使用动态分区可以很好的解决上述问题。动态分区可以根据查询得到的数据自动匹配到相应的分区中去。
+使用动态分区要先设置hive.exec.dynamic.partition参数值为true，默认值为true
+
+hive> set hive.exec.dynamic.partition;
+hive.exec.dynamic.partition=false
+hive> set hive.exec.dynamic.partition=true;
+hive> set hive.exec.dynamic.partition;
+hive.exec.dynamic.partition=true
+
+动态分区的使用方法很简单，假设我想向stat_date='20110728'这个分区下面插入数据，至于province插入到哪个子分区下面让数据库自己来判断，那可以这样写：
+
+select member_id,name,province from partition_test_input where stat_date='20110728';
+----
+3   xuhongxing  sichuan
+4   zhudaoyong  henan
+5   zhouchengyu heilongjiang
+====
+hive> insert overwrite table partition_test partition(stat_date='20110728',province) select member_id,name,province from partition_test_input where stat_date='20110728';
+----
+partition_test/
+└── stat_date=20110728
+    ├── province=heilongjiang
+    │   └── 000000_0
+    ├── province=henan
+    │   └── 000000_0
+    └── province=sichuan
+        └── 000000_0
+====
+stat_date叫做静态分区列，province叫做动态分区列。select子句中需要把动态分区列按照分区的顺序写出来，静态分区列不用写出来。这样stat_date='20110728'的所有数据，会根据province的不同分别插入到/user/hive/warehouse/partition_test/stat_date=20110728/下面的不同的子文件夹下，如果源数据对应的province子分区不存在，则会自动创建，非常方便，而且避免了人工控制插入数据与分区的映射关系存在的潜在风险。
+
+注意，动态分区不允许主分区采用动态列而副分区采用静态列，这样将导致所有的主分区都要创建副分区静态列所定义的分区：
+
+hive> insert overwrite table partition_test partition(stat_date,province='liaoning') select member_id,name,stat_date from partition_test_input where province='liaoning';
+FAILED: Error in semantic analysis: Line 1:48 Dynamic partition cannot be the parent of a static partition 'liaoning'
+
+动态分区可以允许所有的分区列都是动态分区列，但是要首先设置一个参数hive.exec.dynamic.partition.mode ：
+hive> set hive.exec.dynamic.partition.mode;
+
+它的默认值是strick，即不允许分区列全部是动态的，这是为了防止用户有可能原意是只在子分区内进行动态建分区，但是由于疏忽忘记为主分区列指定值了，这将导致一个dml语句在短时间内创建大量的新的分区（对应大量新的文件夹），对系统性能带来影响。
+所以我们要设置：
+hive> set hive.exec.dynamic.partition.mode=nonstrict;
+删除分区
+hive>ALTER TABLE partition_test DROP PARTITION (stat_date='20110728');
+#测试
+hive> insert overwrite table partition_test partition(stat_date,province='liaoning') select member_id,name,stat_date from partition_test_input where province='liaoning';
+还是报错.
+
+
+为了让分区列的值相同的数据尽量在同一个mapreduce中，这样每一个mapreduce可以尽量少的产生新的文件夹，可以借助distribute by的功能，将分区列值相同的数据放到一起：
+
+hive> insert overwrite table partition_test partition(stat_date,province) select member_id,name,stat_date,province from partition_test_input distribute by stat_date,province;
+
+8、数据加载进分区表中语法：
+LOAD DATA [LOCAL] INPATH 'filepath' [OVERWRITE]
+INTO TABLE tablename
+[PARTITION (partcol1=val1, partcol2=val2 ...)]
+
+例：
+LOAD DATA INPATH '/user/pv.txt' INTO TABLE day_hour_table PARTITION(dt='2008-08-08', hour='08');
+LOAD DATA local INPATH '/user/hua/*' INTO TABLE day_hour partition(dt='2010-07- 07');
+
+当数据被加载至表中时，不会对数据进行任何转换。Load操作只是将数据复制至Hive表对应的位置。数据加载时在表下自动创建一个目录，文件存放在该分区下。
+
+9、基于分区的查询的语句：
+SELECT day_table.*
+FROM day_table
+WHERE day_table.dt>= '2008-08-08';
+
+10、查看分区语句：
+hive> show partitions day_hour_table;
+OK
+dt=2008-08-08/hour=08
+dt=2008-08-08/hour=09
+dt=2008-08-09/hour=09
+
+三、总结
+1、在 Hive 中，表中的一个 Partition 对应于表下的一个目录，所有的 Partition 的数据都存储在最字集的目录中。
+2、总的说来partition就是辅助查询，缩小查询范围，加快数据的检索速度和对数据按照一定的规格和条件进行管理
+
+https://blog.csdn.net/qq_36743482/article/details/78418343
+http://blog.sina.com.cn/s/blog_6ff05a2c0100tah0.html
