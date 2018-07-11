@@ -1,0 +1,228 @@
+hive 创表
+Hive建表方式共有三种：
+1 直接建表法
+2 查询建表法
+3 like建表法
+
+#直接建表法
+CREATE [TEMPORARY] [EXTERNAL] TABLE [IF NOT EXISTS] [db_name.]table_name
+-- (Note: TEMPORARY available in Hive 0.14.0 and later)
+  [(col_name data_type [COMMENT col_comment], ... [constraint_specification])]
+  [COMMENT table_comment]
+  [PARTITIONED BY (col_name data_type [COMMENT col_comment], ...)]
+  [CLUSTERED BY (col_name, col_name, ...) [SORTED BY (col_name [ASC|DESC], ...)] INTO num_buckets BUCKETS]
+  [SKEWED BY (col_name, col_name, ...)
+  -- (Note: SKEWED BY Available in Hive 0.10.0 and later)]
+     ON ((col_value, col_value, ...), (col_value, col_value, ...), ...)
+     [STORED AS DIRECTORIES]
+  [
+   [ROW FORMAT row_format]
+   [STORED AS file_format]
+     | STORED BY 'storage.handler.class.name' [WITH SERDEPROPERTIES (...)]
+     -- (Note: Available in Hive 0.6.0 and later)
+  ]
+  [LOCATION hdfs_path]
+  [TBLPROPERTIES (property_name=property_value, ...)]
+  -- (Note: Available in Hive 0.6.0 and later)
+
+[AS select_statement];
+-- (Note: Available in Hive 0.5.0 and later; not supported for external tables)
+
+#like建表法
+CREATE [TEMPORARY] [EXTERNAL] TABLE [IF NOT EXISTS] [db_name.]table_name
+  LIKE existing_table_or_view_name
+  [LOCATION hdfs_path];
+
+data_type
+  : primitive_type
+  | array_type
+  | map_type
+  | struct_type
+  | union_type  -- (Note: Available in Hive 0.7.0 and later)
+
+primitive_type
+  : TINYINT
+  | SMALLINT
+  | INT
+  | BIGINT
+  | BOOLEAN
+  | FLOAT
+  | DOUBLE
+  | DOUBLE PRECISION -- (Note: Available in Hive 2.2.0 and later)
+  | STRING
+  | BINARY      -- (Note: Available in Hive 0.8.0 and later)
+  | TIMESTAMP   -- (Note: Available in Hive 0.8.0 and later)
+  | DECIMAL     -- (Note: Available in Hive 0.11.0 and later)
+  | DECIMAL(precision, scale)  -- (Note: Available in Hive 0.13.0 and later)
+  | DATE        -- (Note: Available in Hive 0.12.0 and later)
+  | VARCHAR     -- (Note: Available in Hive 0.12.0 and later)
+  | CHAR        -- (Note: Available in Hive 0.13.0 and later)
+
+array_type
+  : ARRAY < data_type >
+
+map_type
+  : MAP < primitive_type, data_type >
+
+struct_type
+  : STRUCT < col_name : data_type [COMMENT col_comment], ...>
+
+union_type
+   : UNIONTYPE < data_type, data_type, ... >  -- (Note: Available in Hive 0.7.0 and later)
+
+row_format
+  : DELIMITED [FIELDS TERMINATED BY char [ESCAPED BY char]] [COLLECTION ITEMS TERMINATED BY char]
+        [MAP KEYS TERMINATED BY char] [LINES TERMINATED BY char]
+        [NULL DEFINED AS char]   -- (Note: Available in Hive 0.13 and later)
+  | SERDE serde_name [WITH SERDEPROPERTIES (property_name=property_value, property_name=property_value, ...)]
+
+file_format:
+  : SEQUENCEFILE
+  | TEXTFILE    -- (Default, depending on hive.default.fileformat configuration)
+  | RCFILE      -- (Note: Available in Hive 0.6.0 and later)
+  | ORC         -- (Note: Available in Hive 0.11.0 and later)
+  | PARQUET     -- (Note: Available in Hive 0.13.0 and later)
+  | AVRO        -- (Note: Available in Hive 0.14.0 and later)
+  | INPUTFORMAT input_format_classname OUTPUTFORMAT output_format_classname
+
+constraint_specification:
+  : [, PRIMARY KEY (col_name, ...) DISABLE NOVALIDATE ]
+    [, CONSTRAINT constraint_name FOREIGN KEY (col_name, ...) REFERENCES table_name(col_name, ...) DISABLE NOVALIDATE
+
+
+
+默认创建表
+hive 目录为/opt/hive/warehouse
+默认数据库为default
+----
+CREATE TABLE page_view(
+     viewTime INT,
+     userid BIGINT,
+     page_url STRING,
+     referrer_url STRING,
+     ip STRING COMMENT 'IP Address of the User')
+ COMMENT 'This is the page view table'
+ PARTITIONED BY(dt STRING, country STRING)
+ ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\001'
+   COLLECTION ITEMS TERMINATED BY '\002'
+   MAP KEYS TERMINATED BY '\003'
+ STORED AS TEXTFILE;
+====
+COMMENT:注释,可以有表注释和字段注释
+ROW FORMAT DELIMITED:在加载数据的时候，支持的列分隔符。
+    列(FIELDS)之间用一个'\001'分割,
+    集合(COLLECTION ITEMS)(例如array,map)的元素之间以'\002'隔开,
+    MAP KEYS和value用'\003'分割。
+STORED AS:hive的存储类型
+会在/opt/hive/warehouse目录创建和表名相同的子目录:
+/opt/hive/warehouse/page_view
+
+创建表并加载数据
+create table employee (
+    employee_id INT,
+    birthday DATE,
+    first_name STRING,
+    family_name STRING,
+    gender CHAR(1),
+    work_day DATE)
+row format delimited
+fields terminated by ','
+collection items terminated by '-'
+map keys terminated by ':'
+;
+
+加载数据
+LOAD DATA [LOCAL] INPATH 'filepath' [OVERWRITE] INTO TABLE tablename [PARTITION (partcol1=val1, partcol2=val2 ...)]
+
+load data local inpath '/opt/data/employees.csv' overwrite into table employee;
+
+会将/opt/data/employees.csv复制为到/opt/hive/warehouse/employees/employees.csv下
+
+查询数据
+select * from employee;
+select * from employee order by birthday asc limit 10;
+
+DATE,CHAR显示为NULL
+
+
+导入CSV用专用的序列化器org.apache.Hadoop.hive.serde2.OpenCSVSerde
+默认的分隔符：
+DEFAULT_ESCAPE_CHARACTER \  //转义符
+DEFAULT_QUOTE_CHARACTER  "  //包含符
+DEFAULT_SEPARATOR        ,  //分隔符
+
+employees.csv
+----
+10001,'1953-09-02','Georgi','Facello','M','1986-06-26'
+10002,'1964-06-02','Bezalel','Simmel','F','1985-11-21'
+====
+删除表
+DROP TABLE employee;
+
+创建表
+create table employee (
+    employee_id INT,
+    birthday DATE,
+    first_name STRING,
+    family_name STRING,
+    gender CHAR(1),
+    work_day DATE)
+row format serde
+'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+with serdeproperties
+("separatorChar"=",","quoteChar"="\'");
+
+双引号:
+"quotechar"="\""
+"escapeChar"= "\\"
+
+加载数据
+load data local inpath '/opt/data/employees.csv' overwrite into table employee;
+
+查询
+select * from employee where work_day >= '1990-01-01' and work_day <= '1990-01-31';
+
+create table salary (
+    employee_id INT,
+    salary INT,
+    start_date DATE,
+    end_date DATE)
+row format serde 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+with serdeproperties (
+    "separatorChar" = ",",
+    "quoteChar"     = "\'"
+)
+stored as textfile;
+
+加载数据
+load data local inpath '/opt/data/salaries.csv' overwrite into table salary;
+
+SELECT e.gender, AVG(s.salary) AS avg_salary
+    FROM employee AS e
+          JOIN salary AS s
+            ON (e.employee_id == s.employee_id)
+GROUP BY e.gender;
+
+创建外部表
+有指定EXTERNAL就是外部表，没有指定就是内部表
+删除内部表会直接删除元数据（metadata）及存储数据；删除外部表仅仅会删除元数据，HDFS上的文件并不会被删除；
+对内部表的修改会将修改直接同步给元数据，而对外部表的表结构和分区进行修改，则需要修复（MSCK REPAIR TABLE table_name;）
+
+如果数据已经存在HDFS的'/user/hadoop/warehouse/page_view'上了，如果想创建表，指向这个路径，就需要创建外部表:
+
+CREATE EXTERNAL TABLE page_view(
+     viewTime INT,
+     userid BIGINT,
+     page_url STRING,
+     referrer_url STRING,
+     ip STRING COMMENT 'IP Address of the User',
+     country STRING COMMENT 'country of origination')
+ COMMENT 'This is the staging page view table'
+ ROW FORMAT DELIMITED FIELDS TERMINATED BY '\054'
+ STORED AS TEXTFILE
+ LOCATION '/user/hadoop/warehouse/page_view';
+
+LOCATION 指定数据存储在HDFS的路径
+
+
